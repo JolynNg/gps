@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+websockets
+opencv-python
+numpy
+picamera2
+tflite-runtime
