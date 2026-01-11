@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Camera test - save with PIL (correct colors)"""
+"""Live camera preview with OpenCV (fixed colors)"""
 
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from camera import CameraCapture
-from PIL import Image
+import cv2
 import time
 
-print("Testing camera...")
+print("Starting live preview (press 'q' to quit)...")
 camera = CameraCapture()
 
 if camera.camera is None:
@@ -17,26 +17,30 @@ if camera.camera is None:
     exit(1)
 
 print("✓ Camera initialized")
-time.sleep(2)
 
-frame = camera.capture_frame()
+try:
+    while True:
+        frame = camera.capture_frame()
+        if frame is not None:
+            # Picamera2 returns RGB, OpenCV needs BGR
+            # Convert RGB to BGR for correct colors
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            # Optional: Resize for display
+            display_frame = cv2.resize(frame_bgr, (800, 600))
+            
+            # Show frame
+            cv2.imshow('Camera Preview (Press Q to quit)', display_frame)
+            
+            # Press 'q' to quit
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        time.sleep(0.05)  # Small delay
+        
+except KeyboardInterrupt:
+    print("\nStopped by user")
 
-if frame is not None:
-    # Convert numpy array to PIL Image (PIL expects RGB)
-    image = Image.fromarray(frame.astype('uint8'), 'RGB')
-    
-    # Save with PIL (preserves RGB correctly)
-    image.save('test_camera_pil.jpg', 'JPEG')
-    print("✓ Image saved with PIL: test_camera_pil.jpg")
-    
-    # Also try saving with OpenCV for comparison
-    import cv2
-    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    cv2.imwrite('test_camera_opencv.jpg', frame_bgr)
-    print("✓ Image saved with OpenCV: test_camera_opencv.jpg")
-    print("  Compare both images to see which has correct colors")
-else:
-    print("❌ Failed to capture")
-
+cv2.destroyAllWindows()
 camera.release()
-print("✓ Done!")
+print("✓ Preview closed")
