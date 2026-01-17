@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useNavigationStore } from '../../stores/navigationStore';
+import { useNavigationStore } from '../stores/navigationStore';
 
 export const LaneBar: React.FC = () => {
   const { piLaneData, recommendedLanes } = useNavigationStore();

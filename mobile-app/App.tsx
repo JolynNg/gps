@@ -1,23 +1,25 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, StatusBar } from 'react-native';
 import { MapViewComponent } from './src/components/MapView';
 import { LaneBar } from './src/components/LaneBar';
 import { useNavigationStore } from './src/stores/navigationStore';
 import { piClient } from './src/services/piClient';
 import { locationService } from './src/services/locationService';
+import { UserLocation } from './src/services/locationService';
 
-// Update this with your Raspberry Pi's IP address
-const PI_IP_ADDRESS = '192.168.1.100'; // Change this!
+const PI_IP_ADDRESS = '192.168.1.42'; 
 
 const App: React.FC = () => {
   const { 
     setLocation, 
     setPiLaneData, 
     setRecommendedLanes, 
-    setPiConnectionStatus 
+    setPiConnectionStatus,
+    currentLocation 
   } = useNavigationStore();
   
   const [hasPermissions, setHasPermissions] = useState(false);
+  const lastLocationRef = useRef<UserLocation | null>(null);
 
   useEffect(() => {
     // Request location permissions and start tracking
@@ -25,7 +27,15 @@ const App: React.FC = () => {
       setHasPermissions(granted);
       if (granted) {
         locationService.startTracking((location) => {
-          setLocation(location);
+          console.log('📍 GPS Location:', location.latitude, location.longitude);
+          // Only update if location actually changed
+          const lastLoc = lastLocationRef.current;
+          if (!lastLoc || 
+              Math.abs(lastLoc.latitude - location.latitude) > 0.0001 ||
+              Math.abs(lastLoc.longitude - location.longitude) > 0.0001) {
+            lastLocationRef.current = location;
+            setLocation(location);
+          }
         });
       }
     });
@@ -34,8 +44,6 @@ const App: React.FC = () => {
     piClient.connect(PI_IP_ADDRESS, (data) => {
       setPiLaneData(data);
       setPiConnectionStatus(true);
-      // Use Pi's recommended_lanes directly for now
-      // Later: fuse with map/maneuver data
       setRecommendedLanes(data.recommended_lanes);
     });
 
