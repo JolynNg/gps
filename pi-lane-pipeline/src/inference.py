@@ -1,13 +1,15 @@
 import numpy as np
 from typing import Dict, Any
-import tensorflow as tf
 
-# Initialize TFLite interpreter (when you have a model)
-interpreter = None  # Will be initialized when you have a model
+# Lazy import TensorFlow - only import when model is actually loaded
+tf = None
+interpreter = None
 
 def load_model(model_path: str):
     """Load TFLite model."""
-    global interpreter
+    global interpreter, tf
+    if tf is None:
+        import tensorflow as tf
     interpreter = tf.lite.Interpreter(model_path=model_path)
     interpreter.allocate_tensors()
 
@@ -21,17 +23,15 @@ def run_lane_inference(frame: np.ndarray) -> Dict[str, Any]:
     Returns:
         Dictionary with lane_count, recommended_lanes, and confidence
     """
-    # TODO: Implement actual TFLite inference
-    # Placeholder for now
+    # Return dummy data (TensorFlow not needed for testing)
     if interpreter is None:
-        # Return dummy data until model is loaded
         return {
             "lane_count": 4,
             "recommended_lanes": [2, 3],
             "confidence": 0.85
         }
     
-    # When model is ready:
+    # When model is ready, TensorFlow will be imported in load_model()
     # 1. Preprocess frame (resize, normalize, etc.)
     # 2. Set input tensor
     # 3. Run inference
