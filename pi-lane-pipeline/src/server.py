@@ -4,8 +4,8 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Optional
-from inference import run_lane_inference
-from camera import CameraCapture
+from .inference import run_lane_inference
+from .camera import CameraCapture
 
 app = FastAPI()
 
@@ -24,7 +24,12 @@ camera = CameraCapture()
 #tracks connected WebSocket clients
 active_connections = set()
 
-@app.websocket("/wa/lane-metadata")
+#continuously: 
+#captures a camera frame
+#runs lane detection
+#sends JSON metadata to the phone
+#target: 5-10 Hz (5-10 updates per second)
+@app.websocket("/ws/lane-metadata")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_connections.add(websocket)
