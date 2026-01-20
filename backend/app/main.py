@@ -20,6 +20,7 @@ app.add_middleware(
 # Include routes
 app.include_router(telemetry.router, prefix="/api/v1", tags=["telemetry"])
 app.include_router(lane_hints.router, prefix="/api/v1", tags=["lane-hints"])
+app.include_router(lane_hints.router, prefix="/api/v1", tags=["lane-hints"])
 
 @app.get("/")
 async def root():

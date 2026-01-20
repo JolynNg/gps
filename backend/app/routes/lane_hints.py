@@ -3,8 +3,18 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.models.database import get_db
 from app.models.models import LaneHint
+from app.services.aggregation import aggregate_telemetry_to_hints
 
 router = APIRouter()
+
+@router.post("/aggregate")
+async def trigger_aggregation(db: Session = Depends(get_db)):
+    """Manually trigger aggregation of telemetry to lane hints."""
+    try:
+        aggregate_telemetry_to_hints(db)
+        return {"status": "success", "message": "Aggregation completed"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @router.get("/lane-hints")
 async def get_lane_hints(
