@@ -1,7 +1,7 @@
 //for sending telemetry and getting lane hints. can be done later if want to test the pi connection first
 import axios from 'axios'; //for http requests
 
-const API_BASE_URL = 'https://your-backend-url.com'; // Update later
+const API_BASE_URL = 'http://192.168.1.100:8000'; 
 
 export interface TelemetryData {
   geohash: string;
@@ -16,7 +16,8 @@ export interface TelemetryData {
 class BackendClient {
   async sendTelemetry(data: TelemetryData): Promise<void> {
     try {
-      await axios.post(`${API_BASE_URL}/telemetry`, data);
+      await axios.post(`${API_BASE_URL}/api/v1/telemetry`, data); // Fixed: added /api/v1 prefix
+      console.log('✅ Telemetry sent:', data.geohash);
     } catch (error) {
       console.error('Failed to send telemetry:', error);
     }
@@ -25,7 +26,7 @@ class BackendClient {
   async getLaneHints(geohash: string, heading?: number) {
     try {
       const params = heading ? { geohash, heading } : { geohash };
-      const response = await axios.get(`${API_BASE_URL}/lane-hints`, { params });
+      const response = await axios.get(`${API_BASE_URL}/api/v1/lane-hints`, { params }); // Fixed: added /api/v1 prefix
       return response.data;
     } catch (error) {
       console.error('Failed to get lane hints:', error);
