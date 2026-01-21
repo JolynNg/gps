@@ -8,6 +8,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 import time
 import os
+import traceback
 from .mask_processor import process_lane_mask
 
 # Lazy import TensorFlow
@@ -87,17 +88,29 @@ def run_lane_inference(frame: np.ndarray) -> Dict[str, Any]:
         load_model()
         if interpreter is None:
             # Generate dummy mask for testing
-            h, w = frame.shape[:2]
-            dummy_mask = np.zeros((h, w), dtype=np.uint8)
-            # Draw some fake lanes
-            cv2 = __import__('cv2')
-            cv2.line(dummy_mask, (w//4, h), (w//4, h//2), 255, 20)
-            cv2.line(dummy_mask, (w//2, h), (w//2, h//2), 255, 20)
-            cv2.line(dummy_mask, (3*w//4, h), (3*w//4, h//2), 255, 20)
-            
-            result = process_lane_mask(dummy_mask, frame.shape[:2])
-            result["inference_ms"] = 0.0
-            return result
+            try:
+                h, w = frame.shape[:2]
+                dummy_mask = np.zeros((h, w), dtype=np.uint8)
+                # Draw some fake lanes
+                import cv2
+                cv2.line(dummy_mask, (w//4, h), (w//4, h//2), 255, 20)
+                cv2.line(dummy_mask, (w//2, h), (w//2, h//2), 255, 20)
+                cv2.line(dummy_mask, (3*w//4, h), (3*w//4, h//2), 255, 20)
+                
+                result = process_lane_mask(dummy_mask, frame.shape[:2])
+                result["inference_ms"] = 0.0
+                return result
+            except Exception as e:
+                print(f"❌ Error generating dummy mask: {e}")
+                print(traceback.format_exc())
+                # Return safe defaults
+                return {
+                    "lane_count": 1,
+                    "current_lane_index": 0,
+                    "lane_centers": [],
+                    "confidence": 0.0,
+                    "inference_ms": 0.0
+                }
     
     try:
         # Preprocess
