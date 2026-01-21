@@ -67,7 +67,8 @@ const App: React.FC = () => {
     setRecommendedLanes, 
     setPiConnectionStatus,
     currentLocation,
-    piLaneData  // Added: get piLaneData from store
+    piLaneData,  // Added: get piLaneData from store
+    recommendedLanes  // Added: get recommendedLanes from store
   } = useNavigationStore();
   
   const [hasPermissions, setHasPermissions] = useState(false);
@@ -96,7 +97,12 @@ const App: React.FC = () => {
     piClient.connect(PI_IP_ADDRESS, (data) => {
       setPiLaneData(data);
       setPiConnectionStatus(true);
-      setRecommendedLanes(data.recommended_lanes);
+      // Compute recommended_lanes from current_lane_index (Phase 0: just use current lane)
+      // Phase 5 will enhance this with navigation logic
+      const recommendedLanes = data.current_lane_index >= 0 
+        ? [data.current_lane_index + 1] // Convert 0-indexed to 1-indexed
+        : [];
+      setRecommendedLanes(recommendedLanes);
     });
 
     // Cleanup on unmount
@@ -109,22 +115,26 @@ const App: React.FC = () => {
   // Separate effect for sending telemetry (depends on location and pi data)
   useEffect(() => {
     if (!currentLocation || !piLaneData) {
-      return; // Don't send if we don't have both
+      return;
     }
-
-    // Send telemetry immediately when we have both location and pi data
+  
     const sendTelemetry = () => {
       try {
         const geohash = generateGeohash(currentLocation);
         const heading = currentLocation.heading || 0;
         const speed = currentLocation.speed || 0;
         
+        // Compute recommended_lanes from current_lane_index
+        const recommendedLanes = piLaneData.current_lane_index >= 0 
+          ? [piLaneData.current_lane_index + 1]
+          : [];
+        
         backendClient.sendTelemetry({
           geohash: geohash,
           heading_bucket: Math.floor(heading / 10) * 10,
           speed_bucket: Math.floor(speed / 10) * 10,
           lane_count_estimate: piLaneData.lane_count,
-          recommended_lanes: piLaneData.recommended_lanes,
+          recommended_lanes: recommendedLanes,  // Use computed value
           confidence: piLaneData.confidence,
           model_version: piLaneData.model_version || "lane_v0.1"
         });
@@ -132,17 +142,11 @@ const App: React.FC = () => {
         console.error('Error sending telemetry:', error);
       }
     };
-
-    // Send immediately
+  
     sendTelemetry();
-
-    // Then send periodically (every 5 seconds)
     const telemetryInterval = setInterval(sendTelemetry, 5000);
-
-    return () => {
-      clearInterval(telemetryInterval);
-    };
-  }, [currentLocation, piLaneData]); // Re-run when location or pi data changes
+    return () => clearInterval(telemetryInterval);
+  }, [currentLocation, piLaneData]);  // Re-run when location, pi data, or recommended lanes change
 
   if (!hasPermissions) {
     return (

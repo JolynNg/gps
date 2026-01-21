@@ -1,16 +1,23 @@
 //connects to pi to receive lane metadata
-
 export interface LaneMetadata {
+  // Phase 0 MVP
   lane_count: number;
-  recommended_lanes: number[];
+  current_lane_index: number;
+  lane_centers: number[];
   confidence: number;
+  
+  // Telemetry (Phase 1)
+  fps_camera: number;
+  inference_ms: number;
+  
+  // Metadata
   timestamp: number;
   model_version: string;
 }
 
 class PiClient {
   private ws: WebSocket | null = null;
-  private reconnectInterval: number | null = null;
+  private reconnectInterval: ReturnType<typeof setInterval> | null = null;
   private onMessageCallback: ((data: LaneMetadata) => void) | null = null;
   private piAddress: string = '';
 
