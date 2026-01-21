@@ -1,7 +1,7 @@
 //for sending telemetry and getting lane hints. can be done later if want to test the pi connection first
 import axios from 'axios'; //for http requests
 
-const API_BASE_URL = 'http://192.168.1.100:8000'; 
+const API_BASE_URL = 'http://192.168.1.18:8000'; 
 
 export interface TelemetryData {
   geohash: string;
