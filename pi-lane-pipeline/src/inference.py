@@ -1,4 +1,9 @@
-# pi-lane-pipeline/src/inference.py
+
+try:
+    from . import imp_compat
+except (ImportError, ModuleNotFoundError):
+    pass
+
 import numpy as np
 from typing import Dict, Any, Optional
 import time

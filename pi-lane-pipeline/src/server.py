@@ -1,3 +1,8 @@
+try:
+    from . import imp_compat  # Compatibility shim for Python 3.12+
+except (ImportError, ModuleNotFoundError):
+    pass 
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
