@@ -1,283 +1,392 @@
-
 try:
-    from . import imp_compat
+    from . import imp_compat  # optional compatibility shim
 except (ImportError, ModuleNotFoundError):
     pass
 
-import numpy as np
-from typing import Dict, Any, Optional
-import time
 import os
+import time
 import traceback
-from .mask_processor import process_lane_mask
+from typing import Dict, Any, Optional
 
-# Lazy import TensorFlow
+import numpy as np
+
+# Lazy import TensorFlow / TFLite Runtime
 tf = None
 interpreter = None
 input_details = None
 output_details = None
+use_tflite_runtime = None  # set at load_model()
 
 # Model configuration
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "lane_detection.tflite")
-INPUT_SIZE = (800, 288)  
+INPUT_SIZE = (800, 288)  # (width, height) expected by this TFLite model
 NORMALIZE = True
 INPUT_MEAN = 127.5
 INPUT_STD = 127.5
 
+# Debug overlay settings (set env var LANE_DEBUG_OVERLAY=1 to enable)
+DEBUG_OVERLAY = os.getenv("LANE_DEBUG_OVERLAY", "0") == "1"
+DEBUG_OVERLAY_DIR = os.getenv("LANE_DEBUG_OVERLAY_DIR", os.path.join(os.getcwd(), "debug_outputs"))
+
+# If you still want mask-based processing elsewhere, keep this import
+# (not used in the keypoints->metrics path below).
+try:
+    from .mask_processor import process_lane_mask  # noqa: F401
+except Exception:
+    process_lane_mask = None
+
+
 def load_model(model_path: Optional[str] = None):
-    """Load TFLite model."""
-    global interpreter, tf, input_details, output_details
-    
+    """Load TFLite model (supports tflite_runtime on Pi and tensorflow on desktop)."""
+    global interpreter, tf, input_details, output_details, use_tflite_runtime
+
     if interpreter is not None:
         return
-    
+
     if tf is None:
         try:
-            import tflite_runtime.interpreter as tflite
+            import tflite_runtime.interpreter as tflite  # type: ignore
             tf = tflite
             use_tflite_runtime = True
         except ImportError:
-            import tensorflow as tf
+            import tensorflow as tensorflow  # type: ignore
+            tf = tensorflow
             use_tflite_runtime = False
-    
+
     model_path = model_path or MODEL_PATH
-    
+
     if not os.path.exists(model_path):
-        print(f"⚠️  Model not found at {model_path}. Using dummy mask.")
+        print(f"⚠️  Model not found at {model_path}. Inference will fallback to safe defaults.")
         return
-    
+
     try:
-        # Handle both tflite_runtime (Pi) and tensorflow (Mac)
         if use_tflite_runtime:
             interpreter = tf.Interpreter(model_path=model_path)
         else:
             interpreter = tf.lite.Interpreter(model_path=model_path)
+
         interpreter.allocate_tensors()
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
         print(f"✅ Model loaded: {model_path}")
+        # Optional: print input/output shapes once
+        try:
+            print(f"ℹ️  Input details:  {input_details[0]}")
+            print(f"ℹ️  Output details: {output_details[0]}")
+        except Exception:
+            pass
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         interpreter = None
 
+
 def preprocess_frame(frame: np.ndarray) -> np.ndarray:
-    """Preprocess frame for model input."""
+    """
+    Preprocess frame for model input.
+    NOTE: OpenCV frames are usually BGR. Many models expect RGB.
+    If your overlay is consistently shifted/wrong, try uncommenting the BGR->RGB conversion.
+    """
     import cv2
-    resized = cv2.resize(frame, INPUT_SIZE)
+
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(frame, INPUT_SIZE)  # (w,h)
     processed = resized.astype(np.float32)
-    
+
     if NORMALIZE:
         processed = (processed - INPUT_MEAN) / INPUT_STD
     else:
         processed = processed / 255.0
-    
+
+    # Add batch dim
     processed = np.expand_dims(processed, axis=0)
     return processed
 
-# def keypoints_to_mask(keypoints_output, frame_shape):
-#     """
-#     Convert UFLD keypoints to binary mask.
-#     UFLD outputs shape: (batch, num_rows, num_cols, num_lanes)
-#     Shape (1, 101, 56, 4) means: 101 rows, 56 grid points, 4 lanes
-#     """
-#     import cv2
-#     h, w = frame_shape
-#     mask = np.zeros((h, w), dtype=np.uint8)
-    
-#     # Remove batch dimension: (101, 56, 4)
-#     if len(keypoints_output.shape) == 4:
-#         keypoints_output = keypoints_output[0]
-    
-#     # Shape should now be (num_rows, num_cols, num_lanes)
-#     num_rows, num_cols, num_lanes = keypoints_output.shape
-    
-#     # Generate row indices
-#     row_indices = np.linspace(h//2, h-1, num_rows, dtype=np.int32)
-    
-#     # Process each lane
-#     for lane_idx in range(num_lanes):
-#         lane_data = keypoints_output[:, :, lane_idx]  # Shape: (101, 56)
-        
-#         # Get x-coordinates: take argmax along the column dimension
-#         x_grid_positions = np.argmax(lane_data, axis=1)  # Shape: (101,)
-        
-#         # Get max values to determine validity
-#         max_values = np.max(lane_data, axis=1)
-        
-#         # Use adaptive threshold: lower threshold to catch more lanes
-#         # Also check if the max value is significantly above the mean
-#         mean_max = np.mean(max_values)
-#         threshold = max(0.01, mean_max * 0.3)  # Adaptive threshold
-        
-#         # Filter valid points
-#         valid_mask = max_values > threshold
-        
-#         if np.any(valid_mask):
-#             # Scale from grid (0-55) to pixel coordinates
-#             x_coords = (x_grid_positions[valid_mask] * w / num_cols).astype(np.int32)
-#             y_coords = row_indices[valid_mask]
-            
-#             points = np.column_stack((x_coords, y_coords))
-            
-#             # Draw thicker lines for better mask coverage
-#             for i in range(len(points) - 1):
-#                 cv2.line(mask, tuple(points[i]), tuple(points[i+1]), 255, 5)  # Thicker: 5 instead of 3
-            
-#             # Also draw circles at key points for better coverage
-#             for point in points:
-#                 cv2.circle(mask, tuple(point), 3, 255, -1)
-    
-#     return mask
 
-def keypoints_to_lane_metrics(keypoints_output, frame_shape):
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Numerically-stable softmax."""
+    x = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(x)
+    return e / (np.sum(e, axis=axis, keepdims=True) + 1e-9)
+
+
+def save_keypoints_overlay(
+    frame_bgr: np.ndarray,
+    keypoints_output: np.ndarray,
+    out_path: str,
+    *,
+    prob_threshold: float = 0.50,
+    draw_lines: bool = True,
+) -> None:
+    import os
+    import cv2
+    import numpy as np
+
+    h, w = frame_bgr.shape[:2]
+
+    kp = keypoints_output
+    if kp.ndim == 4:
+        kp = kp[0]  # (rows, cols, lanes)
+
+    num_rows, num_cols, num_lanes = kp.shape
+
+    # Try full-height first; if it looks vertically shifted, switch back to bottom-half
+    y_coords = np.linspace(0, h - 1, num_rows).astype(np.int32)
+    # y_coords = np.linspace(h // 2, h - 1, num_rows).astype(np.int32)
+
+    vis = frame_bgr.copy()
+
+    for lane_idx in range(num_lanes):
+        lane_logits = kp[:, :, lane_idx]          # (rows, cols)
+        lane_prob = softmax(lane_logits, axis=1)  # (rows, cols)
+
+        x_grid = np.argmax(lane_prob, axis=1)     # (rows,)
+        pmax = np.max(lane_prob, axis=1)          # (rows,) in [0,1]
+
+        good_rows = pmax > prob_threshold
+        rows = np.where(good_rows)[0]
+        if len(rows) < 2:
+            continue
+
+        # Build raw points
+        pts = []
+        for r in rows:
+            x = int(x_grid[r] * (w - 1) / (num_cols - 1))
+            y = int(y_coords[r])
+            pts.append((x, y))
+
+        # --- Change 3: continuity filter (REMOVE crazy jumps) ---
+        filtered = []
+        max_dx = int(0.08 * w)  # allow up to 8% width jump per step
+        for p in pts:
+            if not filtered:
+                filtered.append(p)
+                continue
+            if abs(p[0] - filtered[-1][0]) <= max_dx:
+                filtered.append(p)
+
+        pts = filtered
+        if len(pts) < 2:
+            continue
+
+        # --- Change 4: smoothing (polyfit) to remove staircase ---
+        # Fit x as a quadratic function of y (lane curves)
+        if len(pts) >= 6:
+            xs = np.array([p[0] for p in pts], dtype=np.float32)
+            ys = np.array([p[1] for p in pts], dtype=np.float32)
+
+            try:
+                coeff = np.polyfit(ys, xs, 2)  # x = a*y^2 + b*y + c
+                ys2 = np.linspace(ys.min(), ys.max(), 50).astype(np.int32)
+                xs2 = (coeff[0] * ys2 * ys2 + coeff[1] * ys2 + coeff[2]).astype(np.int32)
+
+                # Clamp to image bounds
+                xs2 = np.clip(xs2, 0, w - 1)
+                pts = list(zip(xs2.tolist(), ys2.tolist()))
+            except Exception:
+                # If polyfit fails, keep original pts
+                pass
+
+        # Draw after filtering/smoothing
+        for (x, y) in pts:
+            cv2.circle(vis, (int(x), int(y)), 2, (0, 255, 0), -1)
+
+        if draw_lines and len(pts) >= 2:
+            for i in range(len(pts) - 1):
+                cv2.line(vis, pts[i], pts[i + 1], (0, 255, 0), 2)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    cv2.imwrite(out_path, vis)
+
+
+def keypoints_to_lane_metrics(
+    keypoints_output: np.ndarray,
+    frame_shape: tuple,
+    *,
+    prob_threshold: float = 0.30,
+    bottom_k: int = 10,
+    min_lane_line_separation_px: int = 40,
+) -> Dict[str, Any]:
     """
-    Directly extract lane metrics from keypoints without converting to mask.
-    More reliable for lane counting.
+    Directly extract lane metrics from keypoints without converting to a mask.
+
+    - Converts per-row logits -> probabilities via softmax across num_cols.
+    - Uses bottom rows for stable x-position.
+    - Returns:
+        lane_lines_x: sorted lane boundary x positions (pixels)
+        lane_count: number of lanes (spaces) = max(1, len(lane_lines_x) - 1)
+        lane_centers: centers between adjacent lane lines
+        current_lane_index: nearest center to image center
+        confidence: mean confidence of selected lane lines (0..1)
     """
     h, w = frame_shape
-    
-    # Remove batch dimension
-    if len(keypoints_output.shape) == 4:
-        keypoints_output = keypoints_output[0]
-    
-    num_rows, num_cols, num_lanes = keypoints_output.shape
-    
-    # Count valid lanes and get their x-coordinates at bottom of image
-    valid_lanes = []
-    lane_x_positions = []
-    
+
+    kp = keypoints_output
+    if kp.ndim == 4:
+        kp = kp[0]  # (rows, cols, lanes)
+
+    num_rows, num_cols, num_lanes = kp.shape
+
+    lane_lines_x = []
+    lane_line_conf = []
+
     for lane_idx in range(num_lanes):
-        lane_data = keypoints_output[:, :, lane_idx]  # Shape: (101, 56)
-        max_values = np.max(lane_data, axis=1)
-        mean_confidence = np.mean(max_values)
-        
-        # Lane is valid if mean confidence is above threshold
-        if mean_confidence > 0.05:  # Adjust threshold as needed
-            x_grid = np.argmax(lane_data, axis=1)
-            # Get x-coordinate at bottom of image (last few rows, average for stability)
-            bottom_rows = x_grid[-10:] if len(x_grid) >= 10 else x_grid
-            # Filter out invalid grid positions (0 or very low)
-            valid_bottom = bottom_rows[bottom_rows > 0]
-            if len(valid_bottom) > 0:
-                # Average x position at bottom
-                avg_x_grid = np.mean(valid_bottom)
-                x_pixel = int(avg_x_grid * w / num_cols)
-                valid_lanes.append(lane_idx)
-                lane_x_positions.append(x_pixel)
-    
-        # Sort lane positions by x-coordinate (left to right)
-    if len(lane_x_positions) > 0:
-        sorted_indices = np.argsort(lane_x_positions)
-        lane_x_positions = [lane_x_positions[i] for i in sorted_indices]
-    
-    # Calculate lane centers (midpoints between adjacent lane lines)
-    # These represent actual lanes (spaces between boundaries)
+        lane_logits = kp[:, :, lane_idx]          # (rows, cols)
+        lane_prob = softmax(lane_logits, axis=1)  # (rows, cols)
+
+        x_grid = np.argmax(lane_prob, axis=1)     # (rows,)
+        pmax = np.max(lane_prob, axis=1)          # (rows,) in [0,1]
+
+        # Focus on bottom rows (closer to car, generally more reliable)
+        b = bottom_k if num_rows >= bottom_k else num_rows
+        xg_bottom = x_grid[-b:]
+        p_bottom = pmax[-b:]
+
+        good = p_bottom > prob_threshold
+        if not np.any(good):
+            continue
+
+        # Use median for robustness against outliers
+        xg_med = float(np.median(xg_bottom[good]))
+        conf_mean = float(np.mean(p_bottom[good]))
+
+        # Map grid -> pixel
+        x_px = int(xg_med * (w - 1) / (num_cols - 1))
+
+        lane_lines_x.append(x_px)
+        lane_line_conf.append(conf_mean)
+
+    # Sort lane lines left -> right
+    if lane_lines_x:
+        order = np.argsort(lane_lines_x)
+        lane_lines_x = [lane_lines_x[i] for i in order]
+        lane_line_conf = [lane_line_conf[i] for i in order]
+
+    # Deduplicate lane lines that are too close (collapse to one)
+    filtered_lines = []
+    filtered_conf = []
+    for x, c in zip(lane_lines_x, lane_line_conf):
+        if not filtered_lines:
+            filtered_lines.append(x)
+            filtered_conf.append(c)
+            continue
+        if abs(x - filtered_lines[-1]) >= min_lane_line_separation_px:
+            filtered_lines.append(x)
+            filtered_conf.append(c)
+        else:
+            # Keep the one with higher confidence
+            if c > filtered_conf[-1]:
+                filtered_lines[-1] = x
+                filtered_conf[-1] = c
+
+    lane_lines_x = filtered_lines
+    lane_line_conf = filtered_conf
+
+    # Lanes are spaces between lane lines (boundaries)
+    lane_count = max(1, len(lane_lines_x) - 1)
+
+    # Centers between adjacent lane lines
     lane_centers = []
-    if len(lane_x_positions) >= 2:
-        for i in range(len(lane_x_positions) - 1):
-            center = (lane_x_positions[i] + lane_x_positions[i + 1]) // 2
-            lane_centers.append(center)
-    
-    # Lane count = number of actual lanes (centers), not lane lines
-    lane_count = len(lane_centers) if len(lane_centers) > 0 else 1
-    
-    # Find current lane (closest lane center to image center)
+    if len(lane_lines_x) >= 2:
+        for i in range(len(lane_lines_x) - 1):
+            lane_centers.append((lane_lines_x[i] + lane_lines_x[i + 1]) // 2)
+
+    # Current lane index: closest lane center to image center
+    image_center_x = w // 2
     current_lane_index = 0
-    if len(lane_centers) > 0:
-        image_center_x = w // 2
-        distances = [abs(center - image_center_x) for center in lane_centers]
-        current_lane_index = np.argmin(distances)
-    elif len(lane_x_positions) > 0:
-        # If no centers (only 1 lane line detected), use the lane position itself
-        image_center_x = w // 2
-        distances = [abs(pos - image_center_x) for pos in lane_x_positions]
-        current_lane_index = np.argmin(distances)
-    
-    # Calculate confidence from valid lanes
-    if len(valid_lanes) > 0:
-        confidences = [np.mean(np.max(keypoints_output[:, :, i], axis=1)) for i in valid_lanes]
-        confidence = float(np.mean(confidences))
-    else:
-        confidence = 0.0
-    
+    if lane_centers:
+        distances = [abs(c - image_center_x) for c in lane_centers]
+        current_lane_index = int(np.argmin(distances))
+    elif lane_lines_x:
+        # Fallback: if only one line detected, pick nearest line (not ideal, but safe)
+        distances = [abs(x - image_center_x) for x in lane_lines_x]
+        current_lane_index = int(np.argmin(distances))
+
+    confidence = float(np.mean(lane_line_conf)) if lane_line_conf else 0.0
+
     return {
-        "lane_count": max(1, lane_count),  # At least 1 lane
-        "current_lane_index": current_lane_index,
-        "lane_centers": lane_centers,
-        "confidence": min(1.0, confidence)
+        "lane_lines_x": lane_lines_x,                # boundaries in pixels
+        "lane_count": lane_count,                    # lanes = boundaries - 1
+        "current_lane_index": current_lane_index,    # index into lane_centers
+        "lane_centers": lane_centers,                # lane centers in pixels
+        "confidence": float(np.clip(confidence, 0.0, 1.0)),
     }
+
 
 def run_lane_inference(frame: np.ndarray) -> Dict[str, Any]:
     """
     Run lane detection inference.
-    
-    Returns:
-        Dictionary with:
-        - lane_mask (optional, for debugging)
-        - lane_count
-        - current_lane_index
-        - lane_centers
-        - confidence
-        - inference_ms (for telemetry)
+
+    Returns dict with:
+      - lane_count
+      - current_lane_index
+      - lane_centers
+      - lane_lines_x (debug/useful)
+      - confidence
+      - inference_ms
+      - debug_overlay_path (only when LANE_DEBUG_OVERLAY=1)
     """
     start_time = time.time()
     
-    # If no model, return dummy mask
+    print("DEBUG_OVERLAY =", DEBUG_OVERLAY)
+    print("DEBUG_OVERLAY_DIR =", DEBUG_OVERLAY_DIR)
+
     if interpreter is None:
         load_model()
         if interpreter is None:
-            # Generate dummy mask for testing
-            try:
-                h, w = frame.shape[:2]
-                dummy_mask = np.zeros((h, w), dtype=np.uint8)
-                # Draw some fake lanes
-                import cv2
-                cv2.line(dummy_mask, (w//4, h), (w//4, h//2), 255, 20)
-                cv2.line(dummy_mask, (w//2, h), (w//2, h//2), 255, 20)
-                cv2.line(dummy_mask, (3*w//4, h), (3*w//4, h//2), 255, 20)
-                
-                result = process_lane_mask(dummy_mask, frame.shape[:2])
-                result["inference_ms"] = 0.0
-                return result
-            except Exception as e:
-                print(f"❌ Error generating dummy mask: {e}")
-                print(traceback.format_exc())
-                # Return safe defaults
-                return {
-                    "lane_count": 1,
-                    "current_lane_index": 0,
-                    "lane_centers": [],
-                    "confidence": 0.0,
-                    "inference_ms": 0.0
-                }
-    
+            # Safe defaults when model isn't available
+            return {
+                "lane_count": 1,
+                "current_lane_index": 0,
+                "lane_centers": [],
+                "lane_lines_x": [],
+                "confidence": 0.0,
+                "inference_ms": 0.0,
+            }
+
     try:
-        # Preprocess
         processed_frame = preprocess_frame(frame)
-        
-        # Run inference
-        interpreter.set_tensor(input_details[0]['index'], processed_frame)
+
+        interpreter.set_tensor(input_details[0]["index"], processed_frame)
         interpreter.invoke()
 
-         # Get keypoints output (UFLD format - not a mask!)
-        keypoints_output = interpreter.get_tensor(output_details[0]['index'])
-        
-        # Use direct keypoints-to-metrics (more reliable than mask conversion)
-        result = keypoints_to_lane_metrics(keypoints_output, frame.shape[:2])
+        keypoints_output = interpreter.get_tensor(output_details[0]["index"])
 
-        # Add inference time
-        inference_ms = (time.time() - start_time) * 1000
-        result["inference_ms"] = inference_ms
-        
+        # Optional debug overlay saved to disk
+        debug_overlay_path = None
+        if DEBUG_OVERLAY:
+            os.makedirs(DEBUG_OVERLAY_DIR, exist_ok=True)
+            ts = int(time.time() * 1000)
+            debug_overlay_path = os.path.join(DEBUG_OVERLAY_DIR, f"overlay_{ts}.jpg")
+            try:
+                save_keypoints_overlay(frame, keypoints_output, debug_overlay_path, prob_threshold=0.30)
+            except Exception as e:
+                print(f"⚠️  Failed to save overlay: {e}")
+
+        # Metrics directly from keypoints
+        result = keypoints_to_lane_metrics(
+            keypoints_output,
+            frame.shape[:2],
+            prob_threshold=0.30,
+            bottom_k=10,
+            min_lane_line_separation_px=40,
+        )
+
+        inference_ms = (time.time() - start_time) * 1000.0
+        result["inference_ms"] = float(inference_ms)
+
+        if debug_overlay_path is not None:
+            result["debug_overlay_path"] = debug_overlay_path
+
         return result
-        
+
     except Exception as e:
         print(f"❌ Inference error: {e}")
-        # Return safe defaults
+        print(traceback.format_exc())
         return {
             "lane_count": 1,
             "current_lane_index": 0,
             "lane_centers": [],
+            "lane_lines_x": [],
             "confidence": 0.0,
-            "inference_ms": 0.0
+            "inference_ms": float((time.time() - start_time) * 1000.0),
         }
