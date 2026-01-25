@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+training/PINTO_model_zoo/
+training/TfLite-Ultra-Fast-Lane-Detection-Inference/
+training/train_venv/
+dataset/
